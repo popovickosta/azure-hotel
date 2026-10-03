@@ -25,3 +25,7 @@ The application supports different user roles and covers the complete reservatio
 ## About
 
 The project was developed as part of the Advanced Java Technologies course at the Faculty of Organizational Sciences.
+
+## Further Development
+
+The project was later extended as part of the Programming Languages course with flexible search functionality, including regular-expression-based search across application data.
