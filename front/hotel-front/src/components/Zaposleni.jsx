@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
-import { formatRsd, normalizujZaPretragu, prikazNaziva } from "../utils/format";
+import { formatRsd, normalizujZaPretragu, prikazNaziva, normalizujTekst } from "../utils/format";
+import RegexPomoc from "./RegexPomoc";
+import IstaknutoPoklapanje from "./IstaknutoPoklapanje";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8080";
 
@@ -26,10 +28,35 @@ const statusNaziv = {
   ZAVRSENA: "Završena"
 };
 
+const primeriRegexaRezervacija = [
+  {
+    polje: "Gost",
+    izraz: "[A-Z][a-z]* [A-Z][a-z]*",
+  },
+  {
+    polje: "Email",
+    izraz: "[a-z.]+@[a-z]+[.][a-z]+",
+  },
+  {
+    polje: "Prijava",
+    izraz: "202[0-9]-[0-9]{2}-[0-9]{2}",
+  },
+  {
+    polje: "Status",
+    izraz: "Potvrdjena|Zavrsena",
+  },
+];
+
 export default function Zaposleni() {
   const [rezervacije, setRezervacije] = useState([]);
   const [racunModal, setRacunModal] = useState(null);
   const [pretraga, setPretraga] = useState("");
+  const [nacinPretrage, setNacinPretrage] = useState("obicna");
+  const [poljePretrage, setPoljePretrage] = useState("sva");
+  const [razlikujVelikaIMalaSlova, setRazlikujVelikaIMalaSlova] = useState(false);
+  const [izabraniStatusiKriterijuma, setIzabraniStatusiKriterijuma] = useState([]);
+  const [izabraneGodineKriterijuma, setIzabraneGodineKriterijuma] = useState([]);
+  const [izabraniDomeniKriterijuma, setIzabraniDomeniKriterijuma] = useState([]);
   const [preuzimanjePdf, setPreuzimanjePdf] = useState(false);
   const [usluge, setUsluge] = useState([]);
   const [greska, setGreska] = useState("");
@@ -44,10 +71,11 @@ export default function Zaposleni() {
   }, []);
 
   useEffect(() => {
-    const cekanje = pretraga.trim() ? 250 : 0;
+    const aktivnaPretraga = nacinPretrage === "kriterijumi" || pretraga.trim();
+    const cekanje = aktivnaPretraga ? 250 : 0;
     const timer = setTimeout(() => ucitajRezervacije(), cekanje);
     return () => clearTimeout(timer);
-  }, [strana, pretraga]);
+  }, [strana, pretraga, nacinPretrage]);
 
   async function ucitajRezervacijeStranicu(brojStrane) {
     const res = await fetch(
@@ -64,7 +92,7 @@ export default function Zaposleni() {
   async function ucitajRezervacije() {
     setGreska("");
     try {
-      const globalnaPretraga = pretraga.trim().length > 0;
+      const globalnaPretraga = nacinPretrage === "kriterijumi" || pretraga.trim().length > 0;
       const prva = await ucitajRezervacijeStranicu(globalnaPretraga ? 0 : strana);
 
       let sadrzaj = prva.content || [];
@@ -153,27 +181,348 @@ export default function Zaposleni() {
     }
   }
 
-  const filtrirane = rezervacije.filter(r => {
-    const uslugeTekst = r.usluge
-      ? Object.keys(r.usluge).map((id) => nazivUsluge(id)).join(" ")
-      : "";
-    const tekst = normalizujZaPretragu(
-      `${JSON.stringify(r)} ${uslugeTekst} ${statusNaziv[r.status] || ""}`
+  const poljaPretrage = ["Gost", "Email", "Broj sobe", "Prijava", "Odjava", "Usluge", "Status"];
+
+  function izdvojiGodinu(datum) {
+    const tekst = String(datum || "");
+    return tekst.length >= 4 ? tekst.substring(0, 4) : "";
+  }
+
+  function izdvojiDomen(email) {
+    const delovi = String(email || "").split("@");
+    return delovi.length === 2 ? delovi[1].trim() : "";
+  }
+
+  const godineKriterijuma = [...new Set(
+    rezervacije.map((r) => izdvojiGodinu(r.datumPrijave)).filter(Boolean)
+  )].sort();
+
+  const domeniKriterijuma = [...new Set(
+    rezervacije.map((r) => izdvojiDomen(r.gost?.email)).filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+
+  const statusiKriterijuma = [...new Set(
+    rezervacije.map((r) => r.status).filter(Boolean)
+  )].sort((a, b) =>
+    (statusNaziv[a] || a).localeCompare(statusNaziv[b] || b, "sr")
+  );
+
+  function promeniStatusKriterijuma(status) {
+    setIzabraniStatusiKriterijuma((trenutniStatusi) =>
+      trenutniStatusi.includes(status)
+        ? trenutniStatusi.filter((s) => s !== status)
+        : [...trenutniStatusi, status]
     );
-    return tekst.includes(normalizujZaPretragu(pretraga));
+    setStrana(0);
+  }
+
+  function promeniGodinuKriterijuma(godina) {
+    setIzabraneGodineKriterijuma((trenutneGodine) =>
+      trenutneGodine.includes(godina)
+        ? trenutneGodine.filter((g) => g !== godina)
+        : [...trenutneGodine, godina]
+    );
+    setStrana(0);
+  }
+
+  function promeniDomenKriterijuma(domen) {
+    setIzabraniDomeniKriterijuma((trenutniDomeni) =>
+      trenutniDomeni.includes(domen)
+        ? trenutniDomeni.filter((d) => d !== domen)
+        : [...trenutniDomeni, domen]
+    );
+    setStrana(0);
+  }
+
+  function resetujKriterijume() {
+    setIzabraniStatusiKriterijuma([]);
+    setIzabraneGodineKriterijuma([]);
+    setIzabraniDomeniKriterijuma([]);
+    setStrana(0);
+  }
+
+  function pripremiDomenZaRegex(domen) {
+    return domen.replaceAll(".", "[.]");
+  }
+
+  function napraviRegexZaStatuse() {
+    const izabraniStatusi = izabraniStatusiKriterijuma.filter((status) =>
+      statusiKriterijuma.includes(status)
+    );
+
+    if (izabraniStatusi.length === 0) return null;
+
+    const nazivi = izabraniStatusi.map((status) =>
+      normalizujTekst(statusNaziv[status] || status)
+    ).sort((a, b) => b.length - a.length);
+
+    return new RegExp(nazivi.join("|"));
+  }
+
+  function napraviRegexZaGodine() {
+    const izabraneGodine = izabraneGodineKriterijuma.filter((godina) =>
+      godineKriterijuma.includes(godina)
+    );
+
+    if (izabraneGodine.length === 0) return null;
+    return new RegExp(izabraneGodine.join("|"));
+  }
+
+  function napraviRegexZaDomene() {
+    const izabraniDomeni = izabraniDomeniKriterijuma.filter((domen) =>
+      domeniKriterijuma.includes(domen)
+    );
+
+    if (izabraniDomeni.length === 0) return null;
+
+    const domeni = izabraniDomeni
+      .map((domen) => pripremiDomenZaRegex(normalizujTekst(domen)))
+      .sort((a, b) => b.length - a.length)
+      .join("|");
+    return new RegExp(domeni);
+  }
+
+  function potpunoOdgovara(regularniIzraz, vrednost) {
+    if (!regularniIzraz) return true;
+
+    const tekst = String(vrednost ?? "");
+    const poklapanje = tekst.match(regularniIzraz);
+    return poklapanje !== null && poklapanje[0] === tekst;
+  }
+
+  const regexStatusa = napraviRegexZaStatuse();
+  const regexGodine = napraviRegexZaGodine();
+  const regexDomena = napraviRegexZaDomene();
+
+  function odgovaraKriterijumima(r) {
+    const status = normalizujTekst(statusNaziv[r.status] || "");
+    if (!potpunoOdgovara(regexStatusa, status)) {
+      return false;
+    }
+
+    const godina = izdvojiGodinu(r.datumPrijave);
+    if (!potpunoOdgovara(regexGodine, godina)) {
+      return false;
+    }
+
+    const domen = normalizujTekst(izdvojiDomen(r.gost?.email));
+    if (!potpunoOdgovara(regexDomena, domen)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function vrednostPolja(r, polje) {
+    if (polje === "Gost") return `${r.gost?.ime || ""} ${r.gost?.prezime || ""}`.trim();
+    if (polje === "Email") return r.gost?.email || "";
+    if (polje === "Broj sobe") return String(r.soba?.brojSobe ?? "");
+    if (polje === "Prijava") return r.datumPrijave || "";
+    if (polje === "Odjava") return r.datumOdjave || "";
+    if (polje === "Usluge") {
+      return r.usluge
+        ? Object.keys(r.usluge).map((id) => nazivUsluge(id)).join(" ")
+        : "";
+    }
+    if (polje === "Status") return statusNaziv[r.status] || r.status || "";
+    return "";
+  }
+
+  let regularniIzraz = null;
+  let greskaRegularnogIzraza = "";
+
+  if (nacinPretrage === "regex" && pretraga.trim()) {
+    try {
+      const opcije = razlikujVelikaIMalaSlova ? "" : "i";
+      regularniIzraz = new RegExp(normalizujTekst(pretraga), opcije);
+    } catch {
+      greskaRegularnogIzraza = "Regularni izraz nije ispravan.";
+    }
+  }
+
+  function odgovaraRegularnomIzrazu(vrednost) {
+    if (!regularniIzraz) return false;
+
+    const tekst = normalizujTekst(vrednost);
+    return regularniIzraz.test(tekst);
+  }
+
+  function trebaIstaciRegex(polje) {
+    return nacinPretrage === "regex" &&
+      (poljePretrage === "sva" || poljePretrage === polje);
+  }
+
+  const filtrirane = rezervacije.filter((r) => {
+    if (nacinPretrage === "kriterijumi") {
+      return odgovaraKriterijumima(r);
+    }
+
+    if (!pretraga.trim()) return true;
+
+    const izabranaPolja = poljePretrage === "sva" ? poljaPretrage : [poljePretrage];
+    const vrednosti = izabranaPolja.map((polje) => String(vrednostPolja(r, polje) ?? ""));
+
+    if (nacinPretrage === "regex") {
+      return vrednosti.some((vrednost) => odgovaraRegularnomIzrazu(vrednost));
+    }
+
+    const trazeno = normalizujZaPretragu(pretraga);
+
+    if (poljePretrage === "sva") {
+      const uslugeTekst = r.usluge
+        ? Object.keys(r.usluge).map((id) => nazivUsluge(id)).join(" ")
+        : "";
+      const tekst = normalizujZaPretragu(
+        `${JSON.stringify(r)} ${uslugeTekst} ${statusNaziv[r.status] || ""}`
+      );
+      return tekst.includes(trazeno);
+    }
+
+    return vrednosti.some((vrednost) =>
+      normalizujZaPretragu(vrednost).includes(trazeno)
+    );
   });
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-blue-900">Rezervacije</h2>
-        <input
-          type="text"
-          placeholder="Pretraži rezervacije..."
-          value={pretraga}
-          onChange={e => { setPretraga(e.target.value); setStrana(0); }}
-          className="border border-slate-200 rounded-lg px-4 py-2 text-base w-72 focus:outline-none focus:ring-2 focus:ring-blue-400"
-        />
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-blue-900 mb-4">Rezervacije</h2>
+
+        <div className="flex flex-wrap items-start gap-2">
+          <select
+            value={nacinPretrage}
+            onChange={(e) => {
+              setNacinPretrage(e.target.value);
+              setPretraga("");
+              setPoljePretrage("sva");
+              setStrana(0);
+            }}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="obicna">Obična pretraga</option>
+            <option value="kriterijumi">Pretraga po kriterijumima</option>
+            <option value="regex">Direktna regex pretraga</option>
+          </select>
+
+          {nacinPretrage !== "kriterijumi" && (
+            <>
+              <select
+                value={poljePretrage}
+                onChange={(e) => { setPoljePretrage(e.target.value); setStrana(0); }}
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                <option value="sva">Sva polja</option>
+                {poljaPretrage.map((polje) => (
+                  <option key={polje} value={polje}>{polje}</option>
+                ))}
+              </select>
+
+              <input
+                type="text"
+                placeholder={nacinPretrage === "regex" ? "Unesite regularni izraz..." : "Pretraži rezervacije..."}
+                value={pretraga}
+                onChange={(e) => { setPretraga(e.target.value); setStrana(0); }}
+                className={`border rounded-lg px-4 py-2 text-sm w-72 focus:outline-none focus:ring-2 ${
+                  greskaRegularnogIzraza
+                    ? "border-red-300 focus:ring-red-300"
+                    : "border-slate-200 focus:ring-blue-400"
+                }`}
+              />
+
+              {nacinPretrage === "regex" && (
+                <RegexPomoc
+                  izraz={pretraga}
+                  greska={greskaRegularnogIzraza}
+                  brojRezultata={filtrirane.length}
+                  ukupanBroj={rezervacije.length}
+                  poljePretrage={poljePretrage}
+                  primeri={primeriRegexaRezervacija}
+                  razlikujVelikaIMalaSlova={razlikujVelikaIMalaSlova}
+                  onPromeniRazlikovanje={setRazlikujVelikaIMalaSlova}
+                  onIzaberiPrimer={(primer) => {
+                    setPretraga(primer.izraz);
+                    setPoljePretrage(primer.polje);
+                    setStrana(0);
+                  }}
+                />
+              )}
+            </>
+          )}
+        </div>
+
+        {nacinPretrage === "kriterijumi" && (
+          <div className="mt-3 border border-slate-200 rounded-xl bg-slate-50 p-4">
+            <p className="text-sm text-slate-600 mb-4">
+              Izaberite kriterijume. Ako izaberete više grupa, rezervacija mora da ispuni sve izabrane kriterijume.
+            </p>
+
+            <div className="grid md:grid-cols-3 gap-5">
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">Status rezervacije</p>
+                <div className="flex flex-wrap gap-3">
+                  {statusiKriterijuma.map((status) => (
+                    <label key={status} className="flex items-center gap-2 text-sm text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={izabraniStatusiKriterijuma.includes(status)}
+                        onChange={() => promeniStatusKriterijuma(status)}
+                      />
+                      {statusNaziv[status] || status}
+                    </label>
+                  ))}
+                  {statusiKriterijuma.length === 0 && (
+                    <span className="text-sm text-slate-400">Nema dostupnih statusa.</span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">Godina rezervacije</p>
+                <div className="flex flex-wrap gap-3">
+                  {godineKriterijuma.map((godina) => (
+                    <label key={godina} className="flex items-center gap-2 text-sm text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={izabraneGodineKriterijuma.includes(godina)}
+                        onChange={() => promeniGodinuKriterijuma(godina)}
+                      />
+                      {godina}
+                    </label>
+                  ))}
+                  {godineKriterijuma.length === 0 && (
+                    <span className="text-sm text-slate-400">Nema dostupnih godina.</span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">Email domen gosta</p>
+                <div className="flex flex-wrap gap-3">
+                  {domeniKriterijuma.map((domen) => (
+                    <label key={domen} className="flex items-center gap-2 text-sm text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={izabraniDomeniKriterijuma.includes(domen)}
+                        onChange={() => promeniDomenKriterijuma(domen)}
+                      />
+                      {domen}
+                    </label>
+                  ))}
+                  {domeniKriterijuma.length === 0 && (
+                    <span className="text-sm text-slate-400">Nema dostupnih domena.</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-slate-200">
+              <button type="button" onClick={resetujKriterijume} className="text-blue-600 hover:text-blue-800 mt-2 font-sans">
+                Poništi kriterijume
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
 
       {greska && (
@@ -204,20 +553,64 @@ export default function Zaposleni() {
               {filtrirane.map((r, i) => (
                 <tr key={r.id} className={i % 2 === 0 ? "bg-white" : "bg-slate-50/50"}>
                   <td className="px-6 py-5 text-slate-700">
-                    {r.gost?.ime} {r.gost?.prezime}
+                    <div>
+                      <IstaknutoPoklapanje
+                        vrednost={`${r.gost?.ime || ""} ${r.gost?.prezime || ""}`.trim()}
+                        regularniIzraz={regularniIzraz}
+                        aktivno={trebaIstaciRegex("Gost")}
+                      />
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      <IstaknutoPoklapanje
+                        vrednost={r.gost?.email || ""}
+                        regularniIzraz={regularniIzraz}
+                        aktivno={trebaIstaciRegex("Email")}
+                      />
+                    </div>
                   </td>
-                  <td className="px-6 py-5 text-slate-700">Soba {r.soba?.brojSobe}</td>
-                  <td className="px-6 py-5 text-slate-700">{r.datumPrijave}</td>
-                  <td className="px-6 py-5 text-slate-700">{r.datumOdjave}</td>
+                  <td className="px-6 py-5 text-slate-700">
+                    Soba{" "}
+                    <IstaknutoPoklapanje
+                      vrednost={r.soba?.brojSobe}
+                      regularniIzraz={regularniIzraz}
+                      aktivno={trebaIstaciRegex("Broj sobe")}
+                    />
+                  </td>
+                  <td className="px-6 py-5 text-slate-700">
+                    <IstaknutoPoklapanje
+                      vrednost={r.datumPrijave}
+                      regularniIzraz={regularniIzraz}
+                      aktivno={trebaIstaciRegex("Prijava")}
+                    />
+                  </td>
+                  <td className="px-6 py-5 text-slate-700">
+                    <IstaknutoPoklapanje
+                      vrednost={r.datumOdjave}
+                      regularniIzraz={regularniIzraz}
+                      aktivno={trebaIstaciRegex("Odjava")}
+                    />
+                  </td>
                   <td className="px-6 py-5 text-slate-700">
                     {r.usluge && Object.keys(r.usluge).length > 0
-                      ? Object.entries(r.usluge).map(([id, kol]) => `${nazivUsluge(id)} x${kol}`).join(", ")
+                      ? (
+                        <IstaknutoPoklapanje
+                          vrednost={Object.entries(r.usluge)
+                            .map(([id, kol]) => `${nazivUsluge(id)} x${kol}`)
+                            .join(", ")}
+                          regularniIzraz={regularniIzraz}
+                          aktivno={trebaIstaciRegex("Usluge")}
+                        />
+                      )
                       : <span className="text-slate-400">—</span>
                     }
                   </td>
                   <td className="px-6 py-5">
                     <span className={`px-3 py-1.5 rounded-full text-sm font-medium ${statusBoja[r.status]}`}>
-                      {statusNaziv[r.status]}
+                      <IstaknutoPoklapanje
+                        vrednost={statusNaziv[r.status]}
+                        regularniIzraz={regularniIzraz}
+                        aktivno={trebaIstaciRegex("Status")}
+                      />
                     </span>
                   </td>
                   <td className="px-6 py-5">
@@ -265,7 +658,7 @@ export default function Zaposleni() {
         )}
       </div>
 
-      {ukupnoStrana > 1 && !pretraga && (
+      {ukupnoStrana > 1 && nacinPretrage !== "kriterijumi" && !pretraga && (
         <div className="flex justify-center items-center gap-2 mt-6">
           <button
             onClick={() => setStrana(p => Math.max(0, p - 1))}

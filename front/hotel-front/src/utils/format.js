@@ -8,12 +8,16 @@ export function formatRsd(vrednost) {
   return `${brojFormat.format(Number.isFinite(broj) ? broj : 0)} RSD`;
 }
 
-export function normalizujZaPretragu(vrednost) {
+export function normalizujTekst(vrednost) {
   return String(vrednost ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, "d")
-    .toLowerCase();
+    .replaceAll("đ", "dj")
+    .replaceAll("Đ", "Dj");
+}
+
+export function normalizujZaPretragu(vrednost) {
+  return normalizujTekst(vrednost).toLowerCase();
 }
 
 const standardniNazivi = {
